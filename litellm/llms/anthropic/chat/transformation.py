@@ -625,7 +625,7 @@ class AnthropicConfig:
             )
 
             ## HANDLE JSON MODE - anthropic returns single function call
-            if json_mode and len(tool_calls) == 1:
+            if json_mode is True and len(tool_calls) == 1 and tool_calls[0]["function"].get("name") == "json_tool_call":
                 json_mode_content_str: Optional[str] = tool_calls[0]["function"].get(
                     "arguments"
                 )
