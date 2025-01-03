@@ -10,6 +10,7 @@ from typing import List, Literal, Optional, Tuple, Union, overload
 import httpx
 
 import litellm
+from litellm.constants import RESPONSE_FORMAT_TOOL_NAME
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.litellm_core_utils.prompt_templates.factory import (
@@ -209,13 +210,18 @@ class AmazonConverseConfig:
                 _tool_choice = {"name": schema_name, "type": "tool"}
                 _tool = self._create_json_tool_call_for_response_format(
                     json_schema=json_schema,
-                    schema_name=schema_name if schema_name != "" else "json_tool_call",
+                    schema_name=RESPONSE_FORMAT_TOOL_NAME,
                 )
-                optional_params["tools"] = [_tool]
+
+                if "tools" not in optional_params:
+                    optional_params["tools"] = [_tool]
+                else:
+                    optional_params["tools"] = [
+                        *optional_params["tools"],
+                        *[_tool],
+                    ]
                 optional_params["tool_choice"] = ToolChoiceValuesBlock(
-                    tool=SpecificToolChoiceBlock(
-                        name=schema_name if schema_name != "" else "json_tool_call"
-                    )
+                    tool=SpecificToolChoiceBlock(name=RESPONSE_FORMAT_TOOL_NAME)
                 )
                 optional_params["json_mode"] = True
                 if non_default_params.get("stream", False) is True:
@@ -235,20 +241,26 @@ class AmazonConverseConfig:
             if param == "top_p":
                 optional_params["topP"] = value
             if param == "tools":
-                optional_params["tools"] = value
+                if "tools" not in optional_params:
+                    optional_params["tools"] = value
+                else:
+                    optional_params["tools"] = [
+                        *optional_params["tools"],
+                        *value,
+                    ]
             if param == "tool_choice":
                 _tool_choice_value = self.map_tool_choice_values(
                     model=model, tool_choice=value, drop_params=drop_params  # type: ignore
                 )
                 if _tool_choice_value is not None:
                     optional_params["tool_choice"] = _tool_choice_value
-
+        print("optional_params", optional_params)
         ## VALIDATE REQUEST
         """
         Bedrock doesn't support tool calling without `tools=` param specified.
         """
         if (
-            "tools" not in non_default_params
+            "tools" not in optional_params
             and messages is not None
             and has_tool_call_blocks(messages)
         ):
@@ -524,12 +536,20 @@ class AmazonConverseConfig:
                     )
                     tools.append(_tool_response_chunk)
         chat_completion_message["content"] = content_str
+        finish_reason = map_finish_reason(completion_response["stopReason"])
 
         if json_mode is True and tools is not None and len(tools) == 1:
             # to support 'json_schema' logic on bedrock models
-            json_mode_content_str: Optional[str] = tools[0]["function"].get("arguments")
-            if json_mode_content_str is not None:
-                chat_completion_message["content"] = json_mode_content_str
+            if (
+                "name" in tools[0]["function"]
+                and tools[0]["function"]["name"] == RESPONSE_FORMAT_TOOL_NAME
+            ):
+                json_mode_content_str: Optional[str] = tools[0]["function"].get(
+                    "arguments"
+                )
+                if json_mode_content_str is not None:
+                    chat_completion_message["content"] = json_mode_content_str
+                    finish_reason = "stop"
         else:
             chat_completion_message["tool_calls"] = tools
 
@@ -540,7 +560,7 @@ class AmazonConverseConfig:
 
         model_response.choices = [
             litellm.Choices(
-                finish_reason=map_finish_reason(completion_response["stopReason"]),
+                finish_reason=finish_reason,
                 index=0,
                 message=litellm.Message(**chat_completion_message),
             )
